@@ -1,0 +1,21 @@
+### Note: SS read names should not have "_" character
+
+#graphfolder: ../../DBG_CCS/
+graphalignerfolder: /MMCI/TM/scratch/mikko/random_bins/
+# required for building the de Bruijn graph
+bcalmpath: /MMCI/TM/scratch/mikko/random_bins/bcalm_2_2
+bcalm_converttoGFApath: /MMCI/TM/scratch/mikko/random_bins/convertToGFA.py
+
+reads: /MMCI/TM/scratch/maryam/haploclust-ccs-HG00733/ccs_bams/HG00733.fastq.gz
+
+
+# Kmer size of the graph
+# This should be very low to prevent fragmentation
+k: [101, 127]
+#l: 23
+
+# Minimum kmer abundance of the graph
+# This should be very low
+kmer_abundance: 1 #3
+min_unitig_coverage: 3
+

@@ -1,0 +1,37 @@
+Package: SaaRclust
+Type: Package
+Title: R Package to cluster long sequencing reads into chromosomes to facilitate
+    de novo genome assembly.
+Version: 0.1
+Date: 2017-11-10
+Author: David Porubsky, Maryam Ghareghani and Tobias Marschall
+Maintainer: David Porubsky <david.porubsky@gmail.com>
+Description: This package implements functions for pre genome assembly of long
+    reads.
+Depends:
+    R (>= 3.3.0),
+    cowplot,
+    RColorBrewer,
+    ggplot2,
+    GenomicRanges
+Imports:
+    tidyr,
+    dplyr,
+    lpSolve,
+    igraph,
+    data.table,
+    reshape2,
+    matrixStats,
+    IRanges,
+    Rsamtools,
+    GenomicAlignments,
+Suggests:
+    knitr,
+    testthat,
+    BiocStyle,
+    rmarkdown
+License: Artistic-2.0
+LazyLoad: yes
+VignetteBuilder: knitr, rmarkdown
+URL: https://github.com/maryamghr/SaaRclust.git
+RoxygenNote: 6.1.0

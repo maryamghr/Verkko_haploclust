@@ -1,0 +1,45 @@
+### Note: SS read names should not have "_" character
+
+sample: HG002
+
+# tools
+Rscript: /usr/local/package/bin/Rscript
+#whatshap_split : ../../tools/whatshap-fork/whatshap/cli/split.py
+whatshap_split : utils/split.py
+#hifiasm: ../../tools/hifiasm/hifiasm
+assembly: verkko_test_graph
+BubbleGun: ~/.local/bin/BubbleGun
+
+# long reads
+long_reads_dir: ../../ccs_reads
+
+# directory including all Strand-seq fastq files
+SS_fastq_dir: ../../ss_fastq
+
+reference: ../../reference/hg38.no_alt.fa
+
+phased_vcf_dir: ../../ground-true-phasing/
+vcf_prefix: PR05
+
+# SS bams and phased vcf files
+#SS_bam_dir: ../../ss_bams
+
+bubble_info: "TRUE"
+evaluation: "FALSE"
+
+# saarclust parameters
+testNumClustersHard: [50,60,80,90,100,200]
+numClustersHard: 80
+numClustersSoft: 47
+EMiter: 2
+alpha: 0.01
+minLib: 1
+upperQ: 1 #0.95
+logLth: 1
+theta_constrain: "FALSE"
+log_scale: "TRUE"
+filter_soft_clust_input: "FALSE"
+numAlignments: 30000 #150000
+
+num_chromosomes: 23
+

@@ -1,0 +1,626 @@
+import os
+import subprocess
+import zipfile
+
+configfile: "config.yaml"
+#SHORTREADS = config["shortreads"]
+#ALIGNERBINPATH = config["graphalignerfolder"]
+GRAPHPATH = config["graphfolder"]
+SSfastqDir = config["SS_fastq_dir"]
+SSbamDir = config["SS_bam_dir"]
+#VG = config["VG"]
+#nodelens = config["node_lens"]
+chroms = ["chr" + str(x) for x in range(1, 23)]# + ["chrX"]
+#getSNVbubbles = config["get_snv_bubbles_path"]
+#getRevcompFree = config["get_rev_comp_free_path"]
+#clustersizes = config["cluster_sizes"]
+phasedSSvcfDir = config["phased_vcf_dir"]
+whatshap = config["whatshap"]
+PBbamDir = config["pb_bam_dir"]
+minPBlen = config["min_pb_len"]
+#platinumVCFdir = config["platinum_vcf_dir"]
+N = config["Nchunks"]
+l = len(str(N))
+chunkID = ['0'*(l-len(str(i)))+str(i) for i in range(N)]
+#chunkID = ['000']
+sample = config["sample"]
+w = config["w"]
+#w="-default"
+kMinimap = config["k_minimap"]
+fMinimap = config["f"]
+z = config["z"]
+outputfolder    = "SaaRclust_results"
+numClustersHard = config["numClustersHard"]
+numClustersSoft = config["numClustersSoft"]
+EMiter          = config["EMiter"]
+alpha           = config["alpha"]
+minLib          = config["minLib"]
+upperQ          = config["upperQ"]
+logLth          = config["logLth"]
+theta_constrain = config["theta_constrain"]
+log_scale  	= config["log_scale"]
+filter_soft_clust_input = config["filter_soft_clust_input"]
+ss_names_filter = config["SS_names_filter"]
+numAlignments   = config["numAlignments"]
+
+
+minimapHeader = "SSreadNames\\tSSreadLen\\tQueryCoordStart\\tQueryCoordend\\tstrand\\tPBreadNames\\tPBreadLen\\tTargetCoordStart\\tTargetCoordend\\tNumResidueMatches\\tMatchedBasesWithGaps\\tcigar"
+minimapExtendedHeader = "SSreadNames\\tSSlibNames\\tSSflag\\tSSchrom\\tSSpos\\tSSreadLen\\tQueryCoordStart\\tQueryCoordend\\tstrand\\tPBreadNames\\tPBflag\\tPBchrom\\tPBpos\\tPBreadLen\\tTargetCoordStart\\tTargetCoordend\\tNumResidueMatches\\tMatchedBasesWithGaps\\tcigar"
+
+#print(minimapExtendedHeader)
+
+libs, = glob_wildcards(SSfastqDir+"/{lib}_1.fastq.gz")
+# The following two lines are just for limiting libs and chunls to the first lib/chunk just for dag
+#libs = libs[0]
+#chunkID = chunkID[0]
+
+PBbamfiles,=glob_wildcards(PBbamDir+"/{bamfile}.bam")
+#print(libs)
+#print(SSfastqDir)
+
+
+###############################################
+#######		python functions	#######
+###############################################
+
+#def getclustersize(cl, filename):
+#	return subprocess.getoutput("awk \'$3==\"" + cl + "\" {print $2}\' " + filename)
+#
+#print("getclustersize(V23) = ", getclustersize('V23', clustersizes))
+		
+
+###############################################
+
+clusters = ["V"+str(i) for i in range(1, 48)]
+directions = ["watson", "crick"]
+haplotypes = [1,2]
+haplotype_tags = ["HP:i:1", "HP:i:2"]
+
+
+wildcard_constraints:
+	graphname = "k\d+_a\d+_u\d+",
+	k = "\d+",
+	a = "\d+",
+	u = "\d+",
+	l = "\d+",
+	longnodesize = "\d+",
+	overlapsize = "\d+",
+	longreads = "[^_]+",
+	shortreads = "[^_]+",
+	clust = "[V]\d+",
+	chunks = "[0-9]+",
+	sample=sample,
+
+
+rule all:
+	input:
+		expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/statistics/histogram_ss_cov_in_long_reads.pdf", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/phased_long_reads/pb_phase_iteration2_k{k}_a{a}_l{l}_{sample}.data", k=config["k"], a = config["kmer_abundance"], l = config["l"], kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/het_kmers/bubble_pb_het_kmers_chunk{chunks}_k{k}_a{a}_l{l}_{sample}.data", k=config["k"], a = config["kmer_abundance"], l = config["l"], kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, chunks=chunkID)
+		#expand("bubbles/phased_snv_bubbles_iteration{itr}_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data", itr=2, k=config["k"], a = config["kmer_abundance"], l = config["l"], kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/{sample}_chunk{chunks}_clusters.RData", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, chunks=chunkID)
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/wc_cells_clusters.data", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, chunks=chunkID),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, chunks=chunkID),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/soft_clusters_long_reads_chunk{chunks}.data", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, chunks=chunkID),
+
+
+###############################################################################
+##############		merging read pairs with PEAR		###############
+###############################################################################
+
+rule pear_merge_mates:
+	input:
+		fq1=SSfastqDir+"/{lib}_1.fastq.gz",
+		fq2=SSfastqDir+"/{lib}_2.fastq.gz",
+        
+	output:
+		SSfastqDir+"/merged/{lib}.assembled.fastq",
+		SSfastqDir+"/merged/{lib}.discarded.fastq",
+		SSfastqDir+"/merged/{lib}.unassembled.forward.fastq",
+		SSfastqDir+"/merged/{lib}.unassembled.reverse.fastq"
+        
+	log: "log/pear_merge_mates_{lib}.log"
+        
+	shell: "(time pear -f {input.fq1} -r {input.fq2} -t 101 -o {SSfastqDir}/merged/{wildcards.lib}) > {log} 2>&1"
+	
+
+rule concat_assembled_with_first_pair_of_unassembled:
+	input:
+		SSfastqDir+"/merged/{lib}.assembled.fastq",
+		SSfastqDir+"/merged/{lib}.unassembled.forward.fastq",
+	output: SSfastqDir+"/merged/{lib}.combined.fasta"
+	log: "log/concat_merged_with_first_unmerged_{lib}.log"
+	shell: "(time bioawk -c fastx '{{print \">\"$name; print $seq}}' <(cat {input}) > {output}) > {log} 2>&1"
+
+###############################################################################
+##############	     Adding ground true info to SS read names	###############
+###############################################################################
+
+rule bwa_map_SS_to_ref:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa= config["reference"] + ".sa",
+		ss= SSfastqDir+"/merged/{lib}.combined.fasta"
+	output: SSbamDir+"/{lib}.bam"
+	threads: 8
+	log: "log/bwa_map_SS_to_ref_{lib}.log"
+	shell: "(time bwa mem -t {threads} {input.ref} {input.ss} | samtools view -Sb - > {output}) > {log} 2>&1"
+
+rule sort_SS_bam:
+	input: SSbamDir+"/{lib}.bam"
+	output: SSbamDir+"/{lib}.sorted.bam"
+	log: "log/sort_SS_bam_{lib}.log"
+	shell: "(time samtools sort -o {output} {input}) > {log} 2>&1"
+
+rule export_SS_fasta_from_bam:
+	input: SSbamDir+"/{lib}.bam"
+	output: SSfastqDir+"/merged/{lib}.combined.withmapinfo.fasta"
+	log: "log/export_SS_fasta_from_bam_{lib}.log"
+	shell:
+		'''
+		(time bioawk -c sam '{{s=$seq; if(and($flag, 16)) {{s=revcomp($seq)}} print \">\" $qname \"_{wildcards.lib}_\" $flag \"_\" $rname \"_\" $pos \"\\n\" s}}' \
+		<(samtools view -F 4 {input}) > {output}) > {log} 2>&1
+		'''
+
+
+###############################################################################
+##############	     Adding ground true info to SS read names	###############
+###############################################################################
+
+#TODO: remove the first two rules (they are going to be generated by Snakefile_prepare_input file)
+
+rule export_pacbio_reads:
+	input: PBbamDir+"/{bamfile}.bam"
+	output: expand(PBbamDir+"/{sample}_{{bamfile}}.fasta", sample=sample)
+	log: "log/export_pacbio_reads_{bamfile}.log"
+	shell:
+		'''
+		(time bioawk -c sam '{{s=$seq; if(and($flag, 16)) {{s=revcomp($seq)}} if(length(s)>{minPBlen})print \">\" $qname \"_\" $flag \"_\" $rname \"_\" $pos \"\\n\" s}}' \
+		<(samtools view -F 260 {input} | awk '!seen[$1]++') > {output}) > {log} 2>&1
+		'''
+
+rule concat_all_fasta:
+	input: expand(PBbamDir+"/{{sample}}_{bamfile}.fasta", bamfile=PBbamfiles)
+	output: temp(PBbamDir+"/{sample}.fasta")
+	log: "log/concat_all_fasta_{sample}.log"
+	shell: "(time cat {input} > {output}) > {log} 2>&1"
+
+
+###############################################################################
+##############	     minimap aliging SS reads to PB reads	###############
+###############################################################################
+
+
+rule minimap2_align_SS_to_PB:
+	input:
+		pb_reads=PBbamDir+"/{sample}.{chunks}.fasta",
+		ss_reads=expand(SSfastqDir+"/merged/{lib}.combined.withmapinfo.fasta", lib=libs)
+	output: temp("aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_temp.paf.gz")
+	threads: 8
+	log: "log/minimap_align_chunks_{sample}_chunk{chunks}_{kMinimap}_w{w}_f{f}_z{z}.log"
+	shell: "(time minimap2 -c -t{threads} -k{wildcards.kMinimap} -w{wildcards.w} -f{wildcards.f} -z{wildcards.z} {input.pb_reads} {input.ss_reads} | gzip -c > {output}) > {log} 2>&1"
+	#shell: "(time minimap2 -c -t{threads} -k{wildcards.kMinimap} -f{wildcards.f} -z{wildcards.z} {input.pb_reads} {input.ss_reads} | gzip -c > {output}) > {log} 2>&1"
+
+
+# remove SS read names with unknown chromosomes and output columns 1 through 11 and the last column (cigar) of the minimap output
+rule process_minimap_output:
+	input: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_temp.paf.gz"
+	output: temp("aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.paf.gz")
+	log:"log/process_minimap_output_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_chunk{chunks}.log"
+	shell:
+		'''
+		(time cat <(echo -e \"{minimapHeader}\") <(zcat {input} | awk '$1~/chr([0-9]+|X)_[0-9]+$/{{print $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$NF}}') | gzip -c > {output}) > {log} 2>&1
+		'''
+
+
+rule extend_minimap_columns_by_ground_truth_info:
+	input:  "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.paf.gz"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz"
+	log: "log/extend_minimap_columns_by_ground_truth_info_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_chunk{chunks}.log"
+	shell:
+		'''
+		(time cat <(echo -e \"{minimapExtendedHeader}\") <(zcat {input} | tail -n +2 | gawk 'match($1, /(.*)_(.*)_(.*)_(.*)_(.*)/, ss) match($6, /(.*)_(.*)_(.*)_(.*)/, pb) \
+		{{print ss[1] \"\t\" ss[2] \"\t\" ss[3] \"\t\" ss[4] \"\t\" ss[5] \
+		\"\t\" $2 \"\t\" $3 \"\t\" $4 \"\t\" $5 \"\t\" \
+		pb[1] \"\t\" pb[2] \"\t\" pb[3] \"\t\" pb[4] \"\t\" \
+		$7 \"\t\" $8 \"\t\" $9 \"\t\" $10 \"\t\" $11 \"\t\" $12}}') | gzip -c > {output}) > {log} 2>&1
+		'''
+
+
+###############################################################################
+##############	   	  minimap evaluation			###############
+###############################################################################
+
+
+
+rule intersect_pb_ss_bams:
+	input:
+		pb=PBbamDir+"/{sample}.{chunks}.sorted.bam",
+		#ss=config["SS_bam_dir"]+"/{lib}_srt_dedup.bam"
+		ss=SSbamDir+"/{lib}.sorted.bam"
+	output: PBbamDir+"/intersect_with_ss_bams/intersect_{sample}.{lib}.{chunks}.bed"
+	log: "log/intersect_pb_ss_bams_{sample}_{lib}_{chunks}.log"
+	shell: "(time bedtools intersect -bed -a <(samtools view -F 2304 -Sb {input.pb}) -b {input.ss} -wa -wb > {output}) > {log} 2>&1"
+
+
+rule evaluate_minimap:
+	input: 
+		minimap="aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz",
+		#pb_ss_intersect=expand(PBbamDir+"/intersect_with_ss_bams/intersect_{{sample}}.{lib}.{{chunks}}.bed", lib=libs),
+		log    ="log/evaluate_minimap_{sample}_chunk{chunks}_{kMinimap}_w{w}_f{f}_z{z}.log"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_evaluation.txt"
+	params:
+		overlap=0.8
+	script: "utils/evaluate_minimap.py"
+
+
+rule concat_minimap_evaluation_results:
+	input: 
+		minimap_eval=expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/{{sample}}_chunk{{chunks}}_evaluation.txt", kMinimap=kMinimap, w=w, f=fMinimap, z=z),
+		pb_ss_intersect=expand(PBbamDir+"/intersect_with_ss_bams/intersect_{{sample}}.{lib}.{{chunks}}.bed", lib=libs)
+	output:"minimap_evaluation_{sample}_chunk{chunks}.txt"
+	shell:
+		'''
+		declare -i l=0
+		for g in {input.pb_ss_intersect}
+		do
+		l=$((l+$(awk \'{{print $4, $16}}\' $g | sort | uniq | wc -l)))
+		done
+		echo \"total number of overlaps = \" $l > {output}
+		for f in {input.minimap_eval}
+		do
+			echo $f \"\n\" >> {output}
+			cat $f >> {output}
+			echo \"\n\" >> {output}
+		done
+		'''
+
+
+#rule evaluate_minimap:
+#	input: 
+#		minimap="aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz",
+#		log    ="log/minimap_align_chunks_{sample}_chunk{chunks}.log"
+#	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_evaluation.txt"
+#	params:
+#		overlap=0.8
+#	script: "utils/evaluate_minimap.py"
+
+#######################################################################################################
+##############	     SaaRclust: clustering PacBio reads	by chromosome and direction	###############
+#######################################################################################################
+
+
+rule output_ss_cov_in_long_reads:
+	input: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz"
+	output:
+		ss_cov="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/statistics/ss_cov_in_long_reads_chunk{chunks}.data",
+		ss_lib_cov = "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/statistics/ss_lib_cov_in_long_reads_chunk{chunks}.data"
+	log: "log/output_ss_cov_in_long_reads_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_chunk{chunks}.log"
+	shell: 
+		'''
+		(time zcat {input} | tail -n +2 | awk '{{print $10}}' | sort | uniq -c > {output.ss_cov} &&
+		time zcat {input} | tail -n +2 | awk '{{print $2, $10}}' | sort | uniq | awk '{{print $2}}' | sort | uniq -c > {output.ss_lib_cov}
+		) > {log} 2>&1
+		'''
+
+
+rule plot_ss_cov_in_long_reads_hist:
+	input:
+		ss_cov=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/statistics/ss_cov_in_long_reads_chunk{chunks}.data", chunks=chunkID),
+		ss_lib_cov = expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/statistics/ss_lib_cov_in_long_reads_chunk{chunks}.data", chunks=chunkID)
+	output:	"aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/statistics/histogram_ss_cov_in_long_reads.pdf"
+	log: "log/plot_ss_cov_in_long_reads_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/plot_ss_cov_histo_in_long_reads.snakemake.R"
+
+
+rule install_SaaRclust:
+	output:
+		"utils/R-packages/SaaRclust/R/SaaRclust"
+	log: "log/saarclust-install.log"
+	shell:
+		"""
+		TAR=$(which tar) Rscript utils/install_SaaRclust.R > {log} 2>&1
+		"""
+
+rule HARD_clustering:
+	input:
+		minimapFiles = expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/{sample}_chunk{chunks}.maf.gz", sample=sample, chunks=chunkID), 
+		saarclust="utils/R-packages/SaaRclust/R/SaaRclust"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/hardClusteringResults_{numClustersHard}clusters.RData"
+	log: "log/HARD_clustering_{sample}_k{kMinimap}_w{w}_f{f}_z{z}_{numClustersHard}.log"
+	shell:
+		"""
+		(time Rscript utils/SaaRclust_hardclust_pipeline.R \
+		aligns_k{wildcards.kMinimap}_w{wildcards.w}_f{wildcards.f}_z{wildcards.z} \
+		aligns_k{wildcards.kMinimap}_w{wildcards.w}_f{wildcards.f}_z{wildcards.z}/{outputfolder}_{sample} \
+		{wildcards.numClustersHard} \
+		{alpha} \
+		{numAlignments} \
+		{log_scale} \
+		$(pwd)/utils/R-packages/) \
+		> {log} 2>&1
+		"""
+
+rule plot_num_found_clusters:
+	input: expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/hardClusteringResults_{numClustersHard}clusters.RData", numClustersHard=numClustersHard)
+	output:
+		table="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/hardClusteringResults_num_hitted_clusters.data",
+		plot="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/hardClusteringResults_num_hitted_clusters.pdf"
+	log: "log/plot_num_found_clusters_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/plot_num_found_clusters.snakemake.R"
+
+
+rule SOFT_clustering:
+	input:
+		minimapFile = "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz",
+		HCclustFile = expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/hardClusteringResults_{numClustersHard}clusters.RData", numClustersHard=numClustersHard),
+		saarclust="utils/R-packages/SaaRclust/R/SaaRclust"
+    
+	output:
+		"aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/{sample}_chunk{chunks}_clusters.RData"
+	resources: mem_mb=20000
+	log:
+		"log/SOFT_clustering_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_chunk{chunks}.log"
+	shell:
+		"""
+		(time Rscript utils/SaaRclust_softclust_pipeline.R \
+		{input.minimapFile} \
+		aligns_k{wildcards.kMinimap}_w{wildcards.w}_f{wildcards.f}_z{wildcards.z}/{outputfolder}_{sample} \
+		{numClustersSoft} \
+		{EMiter} \
+		{alpha} \
+		{minLib} \
+		{upperQ} \
+		{logLth} \
+		{input.HCclustFile} \
+		{log_scale} \
+		{filter_soft_clust_input} \
+		{ss_names_filter} \
+		$(pwd)/utils/R-packages/) \
+		> {log} 2>&1
+		"""
+
+
+rule create_SaaRclust_evaluation_plots:
+	input:
+		saarclust="utils/R-packages/SaaRclust/R/SaaRclust",
+		soft_clust=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/{{sample}}_chunk{chunks}_clusters.RData", chunks=chunkID)
+	output:
+		acc_table="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/saarclust_accuracy.table",
+		acc_plot= "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/saarclust_accuracy_plot.pdf"
+	params:
+		inputfolder="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}",
+		minLib=5
+	log: "log/create_SaaRclust_evaluation_plots_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/SaaRclust_evaluation_plots.snakemake.R"
+
+
+rule output_wc_cells_clusters:
+	input:
+		soft_clust=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/{{sample}}_chunk{chunks}_clusters.RData", chunks=chunkID[0]),
+		clust_patrners="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/wc_cells_clusters.data"
+	params:
+		min_theta_wc=0.75
+	log: "log/output_wc_cells_clusters_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/export_wc_cells_clusters.snakemake.R"
+
+
+###############################################################################
+##############	   	  adding clust info to files		###############
+###############################################################################
+
+rule output_soft_clust_in_long_reads:
+	input:
+		soft_clust_file = "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/{sample}_chunk{chunks}_clusters.RData"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/soft_clusters_long_reads_chunk{chunks}.data"
+	log: "log/output_soft_clust_in_long_reads_{sample}_k{kMinimap}_w{w}_f{f}_z{z}_chunk{chunks}.log"
+	script: "utils/outputSoftProbs.R"
+
+
+rule map_clust_to_chrom_dir:
+	input:
+		saarclust="utils/R-packages/SaaRclust/R/SaaRclust",
+		hard_clust=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/hardClusteringResults_{numClustersHard}clusters.RData", numClustersHard=numClustersHard)
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt"
+	log: "log/map_clust_to_chrom_dir_{sample}_k{kMinimap}_w{w}_f{f}_z{z}.log"
+	shell: 
+		'''
+		(time Rscript utils/map_clust_to_chrom_dir.snakemake.R \
+		{input.hard_clust}  \
+		{output} \
+		$(pwd)/utils/R-packages/ ) > {log} 2>&1
+		'''
+
+
+###########################################################################
+##########		clustering SS reads and bubbles		###########
+###########################################################################
+
+
+rule count_SS_clust_cov:
+	input:
+		minimap="aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz",
+		soft_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/{sample}_chunk{chunks}_clusters.RData",
+		clust_partners="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+	output: temp("aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_ss_clust_cov.data")
+	log: "log/count_SS_clust_cov_{sample}_chunk{chunks}_k{kMinimap}_w{w}_f{f}_z{z}.log"
+	script: 'utils/count_ss_clust_cov.snakemake.R'
+
+
+rule cluster_SS_reads:
+	input:
+		clust_cov=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/{{sample}}_chunk{chunks}_ss_clust_cov.data", chunks=chunkID),
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/SS_clusters.data"
+	log: "log/cluster_SS_reads_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/cluster_short_reads.snakemake.py"
+
+
+rule count_bubble_clust_cov:
+	input:
+		minimap="aligns_k{kMinimap}_w{w}_f{f}_z{z}/snv_bubbles_k{k}_a{a}_l{l}/{sample}_{chunks}.paf.gz",
+		soft_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/{sample}_chunk{chunks}_clusters.RData",
+		clust_partners="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+	output: temp("bubbles/snv_bubbles_clust_cov_chunk{chunks}_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data")
+	log: "log/count_bubble_clust_cov_{sample}_chunk{chunks}_k{k}_a{a}_l{l}_k{kMinimap}_w{w}_f{f}_z{z}.log"
+	script: 'utils/count_bubble_clust_cov.snakemake.R'
+
+
+rule cluster_bubbles:
+	input:
+		clust_cov=expand("bubbles/snv_bubbles_clust_cov_chunk{chunks}_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", chunks=chunkID),
+	output: "bubbles/snv_bubbles_clusters_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data"
+	log: "log/cluster_bubbles_k{kMinimap}_w{w}_f{f}_z{z}_k{k}_a{a}_l{l}_{sample}.log"
+	script: "utils/cluster_short_reads.snakemake.py"
+
+
+
+#rule count_bubble_clust_coverage:
+#	input: "bubble_ss_map/valid_exact_map_{x}_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data"
+#	output: temp(SSfastqDir + "/bubble_clust_cov_{x}_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data")
+#	log: "log/count_bubble_clust_coverage_{x}_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+#	shell: "(time tail -n +2 {input} | awk '{{print $3, $4, $5, $6, $7, $8}}' | sort | uniq -c > {output}) > {log} 2>&1"
+
+
+#rule cluster_snv_bubbles:
+#	input:
+#		bubble_clust_count=temp(expand(SSfastqDir + "/bubble_clust_cov_{x}_snv_bubbles_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", x=libs)),
+#		clust_to_chrom="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+#	output:
+#		bubbles_clust="bubbles/snv_bubbles_clusters_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+#	log: "log/cluster_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+#	script: "utils/cluster_snv_bubbles2.snakemake.R"
+
+
+###########################################################################
+##########		mapping SS reads to bubbles		###########
+###########################################################################
+# mummer [options] ref query
+# -c can be used to make the reverse complemented query positions be reported relative to the original strand (not the reverse strand)
+rule map_SS_reads_to_snv_bubbles:
+	input:
+		# TODO: replace it by all.combined.fasta
+		SSreads=SSfastqDir+"/merged/{x}.combined.fasta",
+		bubble="bubbles/snv_bubbles_k{k}_a{a}_l{l}.fa" #_withlen_and_refmap_info.fa"
+	output: "bubble_ss_map/exact_map_{x}_snv_bubbles_k{k}_a{a}_l{l}.data"
+	log: "log/map_SS_reads_to_snv_bubbles_{x}_k{k}_a{a}_l{l}.log"
+	shell: "(time mummer -l {wildcards.k} -b {input.bubble} {input.SSreads} > {output}) > {log} 2>&1"
+
+
+# TODO: change to output also the mapping positions (not only the names)
+rule output_valid_maps:
+	input:
+		map="bubble_ss_map/exact_map_{x}_snv_bubbles_k{k}_a{a}_l{l}.data",
+		ss_reads=SSfastqDir+"/merged/{x}.combined.fasta",
+		unitigs="bubbles/snv_bubbles_k{k}_a{a}_l{l}.fa",
+		#clustering="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/SS_clusters.data",
+	output: "bubble_ss_map/valid_exact_map_{x}_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data"
+	params:
+		libs=libs,
+		input_type="bubble"
+	log: "log/output_valid_maps_{x}_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/output_valid_maps.snakemake.py"
+
+
+###################################################################
+##########		clustering bubbles		###########
+###################################################################
+
+
+rule output_bubble_SSlib_coverage_matrix:
+	input:
+		wc_cell_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/wc_cells_clusters.data",
+		bubbles_clust="bubbles/snv_bubbles_clusters_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+		ss_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/SS_clusters.data",
+		valid_maps=expand("bubble_ss_map/valid_exact_map_{x}_snv_bubbles_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", x=libs),
+		clust_to_chrom="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+	output: expand("bubble_SSlib_cov/cluster{clust}_snv_bubbles_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", clust=clusters)
+	log: "log/output_bubble_ss_lib_coverage_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/output_bubble_ss_lib_coverage.snakemake.R"
+
+
+# TODO: fix the problem of strandphaser phased bubbles. Haplotype sorting of strand states is accurate, but phasing bubbles is not accurate.
+rule strandphaser:
+	input:
+		wc_cell_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/wc_cells_clusters.data",
+		bubble_lib_cov_matrix=expand("bubble_SSlib_cov/cluster{clust}_snv_bubbles_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", clust=clusters),
+		clust_to_chrom="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+	output:
+		phased_strand_states="phased_strand_states/haplo_strand_states_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+		phased_bubbles="bubbles/strandphaser_phased_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data"
+	log: "log/strandphaser_kminimap{kMinimap}_w{w}_f{f}_z{z}_k{k}_a{a}_l{l}_{sample}.log"
+	script: "utils/strandphaser.snakemake.R"
+
+
+rule phase_snv_bubbles:
+	input:
+		SS_bubble_map=expand("bubble_ss_map/valid_exact_map_{x}_snv_bubbles_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", x=libs),
+		ss_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/SS_clusters.data",
+		phased_strand_states="phased_strand_states/haplo_strand_states_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+	output: "bubbles/iteration1_phased_snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}_withclsut.data"
+	script: "utils/phase_snv_bubbles.snakemake.py"
+
+
+rule minimap_align_bubbles_to_PB_reads:
+	input:
+		bubbles="bubbles/snv_bubbles_k{k}_a{a}_l{l}.fa",  #"bubbles/snv_bubbles_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}_withclsut.fa",
+		pb_reads=PBbamDir+"/{sample}.{chunks}.fasta"
+	output:
+		"aligns_k{kMinimap}_w{w}_f{f}_z{z}/snv_bubbles_k{k}_a{a}_l{l}/{sample}_{chunks}.paf.gz"
+	threads: 8
+	log: "log/minimap_align_bubbles_to_PB_reads_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}_{chunks}.log"
+	shell: "(time minimap2 -c -t{threads} -k{wildcards.kMinimap} -w{wildcards.w} -f{wildcards.f} -z{wildcards.z} {input.pb_reads} {input.bubbles} | gzip -c > {output}) > {log} 2>&1"
+
+
+######################################
+#finding heterozygous unitigs
+######################################
+
+## computing the ground truth het unitifs:
+## mapping unitigs to the reference genome
+
+rule bwa_index_ref:
+	input: config["reference"]
+	output:
+		config["reference"] + ".amb",
+		config["reference"] + ".ann",
+		config["reference"] + ".bwt",
+		config["reference"] + ".pac",
+		config["reference"] + ".sa"
+	log: "log/bwa_index_ref.log"
+	shell: "(time bwa index {input}) > {log} 2>&1"
+
+rule samtools_index_ref:
+	input: config["reference"]
+	output: config["reference"] + ".fai"
+	log: "log/samtools_index_ref.log"
+	shell: "(time samtools faidx {input}) > {log} 2>&1"
+
+### TODO: output unitigs from the gfa file
+
+
+## bubble detection
+rule bubble_detection:
+	input: GRAPHPATH + "graph_k{k}_a{a}_l{l}.gfa"
+	output: "bubbles/bubbles_k{k}_a{a}_l{l}.fa"
+	log: "log/bubble_detection_k{k}_a{a}_l{l}.log"
+	shell: "(time python utils/simple_bubbles.py {input} > {output}) > {log} 2>&1"
+
+# Note: for each bubble, exactly two alleles should be written in the output file
+rule output_snv_bubbles:
+	input: "bubbles/bubbles_k{k}_a{a}_l{l}.fa"
+	output: "bubbles/snv_bubbles_k{k}_a{a}_l{l}.fa"
+	log: "log/output_snv_bubbles_k{k}_a{a}_l{l}.log"
+	script: "utils/get_snv_bubbles.py"
+
+
+##########################################################################################################
+
+
+
+
+

@@ -1,0 +1,549 @@
+configfile: "config.yaml"
+whatshap = config["whatshap"]
+PBbamDir = config["pb_bam_dir"]
+N = config["Nchunks"]
+l = len(str(N))
+chunkID = ['0'*(l-len(str(i)))+str(i) for i in range(N)]
+sample = config["sample"]
+w = config["w"]
+kMinimap = config["k_minimap"]
+fMinimap = config["f"]
+z = config["z"]
+SSfastqDir = config["SS_fastq_dir"]
+SSbamDir = config["SS_bam_dir"]
+outputfolder    = "SaaRclust_results"
+chroms, = glob_wildcards(config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz")
+libs, = glob_wildcards(SSfastqDir+"/{lib}_1.fastq.gz")
+outputfolder    = "SaaRclust_results"
+#numClustersHard = config["numClustersHard"]
+testNumClustersHard = config["testNumClustersHard"]
+#numClustersSoft = config["numClustersSoft"]
+#EMiter          = config["EMiter"]
+alpha           = config["alpha"]
+minLib          = config["minLib"]
+upperQ          = config["upperQ"]
+logLth          = config["logLth"]
+theta_constrain = config["theta_constrain"]
+log_scale  	= config["log_scale"]
+numAlignments   = config["numAlignments"]
+haplotypes = ['H1', 'H2']
+
+wildcard_constraints:
+	chunks = "[0-9]+",
+	sample=sample,
+	prefix="[rp]"
+
+
+		
+#####################################################################
+
+###### getting clusters
+clust_pairs_file = "aligns_k" + str(kMinimap) + "_w" + str(w) + "_f" + str(fMinimap) + "_z" + str(z) + "/SaaRclust_results_" + sample + "/clust_partners.txt"
+
+clusters = []
+clust_pairs = []
+clust_pair_to_chrom = {}
+
+with open(clust_pairs_file) as f:
+	next(f)
+	for line in f:
+		if line=="":
+			continue
+
+		sp = line.split()
+		chr, clust1, clust2 = sp[0], sp[1], sp[2]
+		chr = chr.split('_')[0]
+
+		min_clust, max_clust = min(clust1, clust2), max(clust1, clust2)
+		clust_pair = min_clust + '_' + max_clust
+
+		clusters.append(clust1)
+		if clust1 == min_clust:
+			clust_pairs.append(clust_pair)
+			clust_pair_to_chrom[clust_pair] = chr
+
+print('clusters =', clusters)
+print('clust_pairs =', clust_pairs)
+print('len(clust_pairs) =', len(clust_pairs))
+
+
+rule all:
+	input:
+		expand(SSbamDir+"/{lib}_haplotagged.bam.bai", lib=libs),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/Bandage_sessions/{clust_pair}_{prefix}_gr_haplo.csv", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, prefix=['r'], clust_pair=clust_pairs),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/quast_results/ref_H0_{clust_pair}_{haplo}.p_ctg/report.pdf", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, clust_pair=clust_pairs, haplo=['h1', 'h2']),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/ccs_phase_eval.data", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/unitigs_phase_eval.data", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/quast_results/ref_H0_{clust_pair}.p_ctg/report.pdf", k=config["k"], a = config["kmer_abundance"], l = config["l"], kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, clust_pair=clust_pairs, haplo=haplotypes),
+		#expand("ground_truth_strand_states/{lib}_haplo_strand_states_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.data", lib=libs, kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample),
+		#expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.haplotagged.bubbles.bam.bai", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, prefix=['r'], clust_pair=clust_pairs)
+
+#####################################################################
+###########################################################
+########### get long read coverages in ss reads ###########
+###########################################################
+
+rule output_ss_read_names:
+    input: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}.maf.gz"
+    output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_ss_names.data"
+    log: "log/output_ss_names_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_chunk{chunks}.log"
+    shell: "(time zcat {input} | awk '{{print $1}}'  | sort -S 50% > {output}) > {log} 2>&1"
+
+rule count_ccs_cov_in_ss:
+    input: expand("aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_chunk{chunks}_ss_names.data", kMinimap=kMinimap, w=w, f=fMinimap, z=z, sample=sample, chunks=chunkID)
+    output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/{sample}_ccs_cov_in_ss.data"
+    threads:38
+    log: "log/count_ccs_cov_in_ss_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+    shell:"(time sort -S 50% -m --parallel={threads} {input} | uniq -c > {output}) > {log} 2>&1"
+		
+######################################################
+########### merging and indexing vcf files ###########
+######################################################
+
+rule index_vcf_file:
+	input: config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz"
+	output: config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz.tbi"
+	log: "log/index_vcf_file_{chrom}.log"
+	shell: "tabix {input}"
+
+rule merge_chromosome_vcf:
+	input:
+		vcf=expand(config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz", chrom=chroms),
+		tbi=expand(config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz.tbi", chrom=chroms)
+	output: config["phased_vcf_dir"]+"merged_phased.vcf.gz"
+	log: "log/merge_chromosome_vcf.log"
+	shell: #"(time bcftools merge --force-samples -Oz {input.vcf} -o {output}) > {log} 2>&1"
+		'''
+		(time cat <(zcat {input[0]} | awk '/^#/{{print}}') <(zcat {input} | awk '/^chr/{{print}}') | bgzip -c > {output}) > {log} 2>&1
+		'''
+
+rule index_merged_phased_vcf:
+	input: config["phased_vcf_dir"]+"merged_phased.vcf.gz"
+	output: config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi"
+	log: "log/index_merged_phased_vcf.log"
+	shell: "(time tabix {input}) > {log} 2>&1"
+
+######################################################
+############# creating phased references #############
+######################################################
+
+rule create_phased_references:
+	input:
+		fasta="GRCh38_full_analysis_set_plus_decoy_hla.fa",
+		vcf=config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz"
+	output:
+		h1="phased_references/{chrom}_haplotype1.fasta",
+		h2="phased_references/{chrom}_haplotype2.fasta"
+	log: "log/create_phased_references_{chrom}.log"
+	shell:
+		'''
+		(time bcftools consensus --sample {sample} -H 1 -f <(bioawk -c fastx '{{if($name=={wildcards.chrom}) print \">\"$name; print $seq}}' {input.fasta}) {input.vcf} > {output.h1} &&
+		      bcftools consensus --sample {sample} -H 2 -f <(bioawk -c fastx '{{if($name=={wildcards.chrom}) print \">\"$name; print $seq}}' {input.fasta}) {input.vcf} > {output.h2}
+		) > {log} 2>&1
+		'''
+
+###########################################
+######### haplotagging PB reads ###########
+###########################################
+
+rule bwa_index_ref:
+	input: config["reference"]
+	output:
+		config["reference"] + ".amb",
+		config["reference"] + ".ann",
+		config["reference"] + ".bwt",
+		config["reference"] + ".pac",
+		config["reference"] + ".sa"
+	log: "log/bwa_index_ref.log"
+	shell: "(time bwa index {input}) > {log} 2>&1"
+
+
+rule samtools_index_ref:
+	input: config["reference"]
+	output: config["reference"] + ".fai"
+	log: "log/samtools_index_ref.log"
+	shell: "(time samtools faidx {input}) > {log} 2>&1"
+
+
+rule bwa_map_PB_fasta:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		pb=PBbamDir+"/raw_reads/{sample}.{chunks}.fasta"
+	output: PBbamDir+"/aln/{sample}.{chunks}.bam"
+	threads: 1
+	log: "log/bwa_map_PB_fasta_{sample}_{chunks}.log"
+	shell: "(time bwa mem -t {threads} -x pacbio {input.ref} {input.pb} | samtools view -Sb - > {output}) > {log} 2>&1"
+
+rule sort_pb_bam:
+	input: PBbamDir+"/aln/{sample}.{chunks}.bam",
+	output: PBbamDir+"/aln/{sample}.{chunks}.sorted.bam"
+	log: "log/{sample}_{chunks}.log"
+	shell: "(time samtools sort -o {output} {input}) > {log} 2>&1"
+
+
+rule index_PB_bam:
+	input:  PBbamDir+"/aln/{sample}.{chunks}.sorted.bam"
+	output: PBbamDir+"/aln/{sample}.{chunks}.sorted.bam.bai"
+	log: "log/index_PB_bam_{sample}_{chunks}.log"
+	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+rule haplotag_PB_reads:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		fai=config["reference"] + ".fai",
+		vcf=config["phased_vcf_dir"]+"merged_phased.vcf.gz",
+		tbi=config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi",
+		bam=PBbamDir+"/aln/{sample}.{chunks}.sorted.bam",
+		bai=PBbamDir+"/aln/{sample}.{chunks}.sorted.bam.bai",
+	output: PBbamDir+"/aln/{sample}.{chunks}.haplotagged.bam"
+	log: "log/haplotag_PB_reads_{sample}_{chunks}.log"
+	shell: "(time {whatshap} haplotag -o {output} --reference {input.ref} {input.vcf} {input.bam} --ignore-read-groups --sample={sample}) > {log} 2>&1"
+
+
+rule index_haplotagged_PB_bam:
+	input:  PBbamDir+"/aln/{sample}.{chunks}.haplotagged.bam"
+	output: PBbamDir+"/aln/{sample}.{chunks}.haplotagged.bam.bai"
+	log: "log/index_haplotagged_PB_bam_{sample}_{chunks}.log"
+	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+###########################################
+######### haplotagging snv bubbles ########
+###########################################
+
+rule bwa_map_snv_bubble_unitigs_to_ref:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		unitigs="bubbles/snv_bubbles_k{k}_a{a}_l{l}.fa"
+	output: "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.bam"
+	log: "log/bwa_map_snv_bubble_unitigs_to_ref_k{k}_a{a}_l{l}.log"
+	threads: 32
+	shell:
+		"(time bwa mem -t {threads} -c 1 {input.ref} {input.unitigs} | samtools view -Sb - > {output}) > {log} 2>&1"
+
+rule sort_bam_snv_bubbles:
+	input: "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.bam"
+	output: "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.sorted.bam"
+	log: "log/sort_bam_snv_bubbles_k{k}_a{a}l{l}.log"
+	shell: "(time samtools sort -o {output} {input}) > {log} 2>&1"
+
+
+rule index_bam_snv_bubbles:
+	input:  "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.sorted.bam"
+	output: "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.sorted.bam.bai"
+	log: "log/index_bam_snv_bubbles_k{k}_a{a}l{l}.log"
+	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+rule haplotag_snv_bubbles:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		fai=config["reference"] + ".fai",
+		vcf=config["phased_vcf_dir"]+"merged_phased.vcf.gz",
+		tbi=config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi",
+		bam="bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.sorted.bam",
+		bai="bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.sorted.bam.bai",
+	output: "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.haplotagged.bam"
+	log: "log/haplotag_snv_bubbles_k{k}_a{a}l{l}.log"
+	shell: "(time {whatshap} haplotag -o {output} --reference {input.ref} {input.vcf} {input.bam} --ignore-read-groups --sample={sample}) > {log} 2>&1"
+
+
+rule index_haplotagged_bam_snv_bubbles:
+	input:  "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.haplotagged.bam"
+	output: "bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.haplotagged.bam.bai"
+	log: "log/index_haplotagged_bam_snv_bubbles_k{k}_a{a}l{l}.log"
+	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+#####################################################
+######### haplotagging overlap bubbles ########
+#####################################################
+
+rule bwa_map_bubbles_to_ref:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		unitigs="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/{clust_pair}.{prefix}_utg.fa"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.bam"
+	log: "log/bwa_map_unitigs_to_ref_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}.{prefix}.fasta"
+	threads: 12
+	shell:
+		"(time bwa mem -t {threads} -c 1 {input.ref} {input.unitigs} | samtools view -Sb - > {output}) > {log} 2>&1"
+
+rule sort_bam_bubbles:
+	input: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.bam"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.sorted.bam"
+	log: "log/sort_bam_snv_bubbles_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}.{prefix}.log"
+	shell: "(time samtools sort -o {output} {input}) > {log} 2>&1"
+
+
+rule index_bam_bubbles:
+	input:  "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.sorted.bam"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.sorted.bam.bai"
+	log: "log/index_bam_unitigs_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}.{prefix}.log"
+	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+rule haplotag_bubbles:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		fai=config["reference"] + ".fai",
+		vcf=config["phased_vcf_dir"]+"merged_phased.vcf.gz",
+		tbi=config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi",
+		bam="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.sorted.bam",
+		bai="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.sorted.bam.bai",
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.haplotagged.bam"
+	log: "log/haplotag_unitigs_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}.{prefix}.log"
+	shell: "(time {whatshap} haplotag -o {output} --reference {input.ref} {input.vcf} {input.bam} --ignore-read-groups --sample={sample}) > {log} 2>&1"
+
+
+rule index_haplotagged_bam_bubbles:
+	input:  "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.haplotagged.bam"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.{prefix}.haplotagged.bam.bai"
+	log: "log/index_haplotagged_bam_snv_bubbles_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}.{prefix}.log"
+	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+rule create_bandage_coloring_csv:
+		input:
+			clust_to_chrom_file="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+			unitigs_fasta="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/{clust_pair}/asm.r_utg.fa",
+			unitigs_bam="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.r.haplotagged.bam",
+			phased_unitigs="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/{clust_pair}/phased_bubbles.data",
+			valid_maps="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/bubble_ss_map/valid_{clust_pair}_r_utg_maximal_uniqe_exact_match.data",
+			ss_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/ss_reads/cluster{clust_pair}.data",
+			ss_phase="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/phased_strand_states/haplo_strand_states_{clust_pair}_r.data",
+			ccs_bam="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/{sample}.{clust_pair}.haplotagged.bam",
+			hifiasm_gfa="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/{clust_pair}/asm.r_utg.gfa"
+		output:
+			gr_haplo="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/Bandage_sessions/{clust_pair}_r_gr_haplo.csv",
+			ss_haplo_cov="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/Bandage_sessions/{clust_pair}_r_haplo_ss_cov.csv",
+		log: "log/create_bandage_coloring_csv_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}.r.log"
+		script: "utils/output_bandage_labels.R"
+
+
+###############################################################################
+##############	     SaaRclust HARD clustering evaluation	###############
+###############################################################################
+
+
+rule HARD_clustering_test:
+	input:
+		minimapFiles = expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/{{sample}}_chunk{chunks}.maf.gz", chunks=chunkID), 
+		saarclust="utils/R-packages/SaaRclust/R/SaaRclust"
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/hardClusteringResults_{testNumClustersHard}clusters.RData"
+	log: "log/HARD_clustering_{sample}_k{kMinimap}_w{w}_f{f}_z{z}_{testNumClustersHard}clusters.log"
+	shell:
+		"""
+		(time Rscript utils/SaaRclust_hardclust_pipeline.R \
+		aligns_k{wildcards.kMinimap}_w{wildcards.w}_f{wildcards.f}_z{wildcards.z} \
+		aligns_k{wildcards.kMinimap}_w{wildcards.w}_f{wildcards.f}_z{wildcards.z}/{outputfolder}_{sample} \
+		{wildcards.testNumClustersHard} \
+		{alpha} \
+		{numAlignments} \
+		{log_scale} \
+		$(pwd)/utils/R-packages/) \
+		> {log} 2>&1
+		"""
+
+rule plot_num_found_clusters:
+	input: expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/hardClusteringResults_{testNumClustersHard}clusters.RData", testNumClustersHard=testNumClustersHard)
+	output:
+		table="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/hardClusteringResults_num_hitted_clusters.data",
+		plot="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/hardClusteringResults_num_hitted_clusters.pdf"
+	log: "log/plot_num_found_clusters_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	script: "utils/plot_num_found_clusters.snakemake.R"
+
+
+###############################################################################
+##############	     SaaRclust pairing clusters evaluation	###############
+###############################################################################
+
+
+rule evaluate_pairing_clusters:
+	input:
+		clust_chrom_count=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/{{sample}}_chunk{chunks}_clust_chrom_dir_count.data", chunks=chunkID),
+		soft_clust=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/{{sample}}_chunk{chunks}_clusters.RData", chunks=chunkID)
+	output: "aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt"
+	script: "utils/evaluate_pairing_clusters.R"
+
+#########################################################
+#########	ss clustering evaluation	#########
+#########################################################
+
+rule evaluate_ss_clustering:
+	input:
+		clust_to_chrom_dir="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+		ss_clust="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/SS_clusters.data",
+		ss_bam_list=expand(SSbamDir+"/{lib}.sorted.bam", lib=libs),
+	output: "evaluation/ss_clustering_evaluation_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data"
+	script: "utils/evaluate_ss_clustering.snakemake.py"
+
+
+
+#########################################################
+#########	long read phasing evaluation	#########
+#########################################################
+
+rule evaluate_haploclust:
+	input:
+		bubble_haplotagged_bam_file="bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.haplotagged.bam",
+		bubble_haplotagged_bam_index="bubbles/mapped_contigs_k{k}_a{a}_l{l}.snv.bubbles.unitigs.haplotagged.bam.bai",
+		bubble_clust_file="bubbles/snv_bubbles_clusters_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+		clust_to_chrom_file="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt",
+		long_reads_clust_files=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/soft_clusters_long_reads_chunk{chunks}.data", chunks=chunkID),
+		long_read_haplotagged_bam_files=expand(PBbamDir+"/{{sample}}.{chunks}.haplotagged.bam", chunks=chunkID),
+		bubbles_phase_files=expand("haploclust_iteration{{itr}}/phased_snv_bubbles_cluster{clust_pair}_iteration{{itr}}_k{{k}}_a{{a}}_l{{l}}_kminimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_{{sample}}.data", clust_pair=clust_pairs),
+		long_reads_phase_files=expand("haploclust_iteration{{itr}}/pb_phase_cluster{clust_pair}_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_k{{k}}_a{{a}}_l{{l}}_{{sample}}.data", clust_pair=clust_pairs)
+	output:
+		bubbles_haploclust_evaluation_file="evaluation_iteration{itr}/bubble_phase_evaluation/iteration{itr}_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+		long_reads_haploclust_evaluation_file="evaluation_iteration{itr}/long_read_phase_evaluation/iteration{itr}_k{k}_a{a}_{itr}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.data",
+	log: "log/evaluate_haploclust_{itr}iterations_k{k}_a{a}_l{l}_kminimap{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	shell:
+		'''
+		time python3 utils/evaluate_haploclust.snakemake.py \
+		--bubble_haplotagged_bam_file {input.bubble_haplotagged_bam_file} \
+		--bubble_clust_file {input.bubble_clust_file} \
+		--clust_to_chrom_file {input.clust_to_chrom_file} \
+		--long_reads_clust_files {input.long_reads_clust_files} \
+		--long_read_haplotagged_bam_files {input.long_read_haplotagged_bam_files} \
+		--bubble_phase_files {input.bubbles_phase_files} \
+		--long_read_phase_files {input.long_reads_phase_files} \
+		--bubbles_haploclust_evaluation_file {output.bubbles_haploclust_evaluation_file} \
+		--long_reads_haploclust_evaluation_file {output.long_reads_haploclust_evaluation_file}
+		'''
+
+#########################################################
+##############	assembly evaluation	#################
+#########################################################
+
+rule evaluate_phasing:
+	input:
+		ccs_bam=expand(PBbamDir+"/{{sample}}.{chunks}.haplotagged.bam", chunks=chunkID),
+		ccs_phase=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/split/hifiasm/{clust_pair}/ccs_phase.data", clust_pair=clust_pairs),
+		unitig_bam=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/split/hifiasm/bubble_ref_aln/{clust_pair}.r.haplotagged.bam", clust_pair=clust_pairs),
+		unitig_phase=expand("aligns_k{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}/"+outputfolder+"_{{sample}}/Clusters/split/hifiasm/{clust_pair}/phased_bubbles.data", clust_pair=clust_pairs),
+	output:
+		ccs="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/ccs_phase_eval.data",
+#		unitig="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/unitigs_phase_eval.data",
+	params:
+		data_type="unitig"
+	log:
+		"log/evaluate_phasing_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.log"
+	shell:
+		'''
+		(time python3 utils/evaluate_phasing.py --haplotagged_bam_file {input.ccs_bam} --phase_file {input.ccs_phase} --output_file {output.ccs})> {log} 2>&1
+        '''
+
+rule quast_evaluate_assembly:
+	input:
+		ref_h0=lambda wc: ("phased_references/{}.{}.h0.polish.fasta").format(wc.sample, clust_pair_to_chrom[wc.clust_pair]),
+		ref_h1=lambda wc: ("phased_references/{}.{}.h1.polish.fasta").format(wc.sample, clust_pair_to_chrom[wc.clust_pair]),
+		assembly="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/{clust_pair}/asm.{haplo}.p_ctg.fa",
+	output: 
+		h0="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/quast_results/ref_H0_{clust_pair}_{haplo}.p_ctg/report.pdf",
+		h1="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/Clusters/split/hifiasm/quast_results/ref_H1_{clust_pair}_{haplo}.p_ctg/report.pdf"
+	threads: 2
+	log:
+		h0="log/quast_evaluate_assembly_h0_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}_{haplo}.log",
+		h1="log/quast_evaluate_assembly_h1_k{kMinimap}_w{w}_f{f}_z{z}_{sample}_{clust_pair}_{haplo}.log"
+	shell:
+		'''
+		DIR=$(dirname {input.assembly}) && DIR=$(dirname $DIR) &&
+		(time quast -r {input.ref_h0} -t {threads} -o $DIR/quast_results/ref_H0_{wildcards.clust_pair}_{wildcards.haplo}.p_ctg {input.assembly}) > {log.h0} 2>&1 &&
+		(time quast -r {input.ref_h1} -t {threads} -o $DIR/quast_results/ref_H1_{wildcards.clust_pair}_{wildcards.haplo}.p_ctg {input.assembly}) > {log.h1} 2>&1
+		'''
+
+
+#################################################
+#########	SS haplo strand states	#########
+#################################################
+
+rule haplotag_SS_reads:
+	input:
+		ref=config["reference"],
+		amb=config["reference"] + ".amb",
+		ann=config["reference"] + ".ann",
+		bwt=config["reference"] + ".bwt",
+		pac=config["reference"] + ".pac",
+		sa=config["reference"] + ".sa",
+		fai=config["reference"] + ".fai",
+		vcf=config["phased_vcf_dir"]+"merged_phased.vcf.gz",
+		tbi=config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi",
+		bam=SSbamDir+"/{lib}.sorted.bam",
+		bai=SSbamDir+"/{lib}.sorted.bam.bai",
+	output: SSbamDir+"/{lib}_haplotagged.bam"
+	log: "log/haplotag_SS_reads_lib{lib}.log"
+	shell: "(time {whatshap} haplotag -o {output} --reference {input.ref} {input.vcf} {input.bam} --ignore-read-groups --sample {sample}) > {log} 2>&1"
+
+rule index_ss_haplotagged_bams:
+	input: SSbamDir+"/{lib}_haplotagged.bam"
+	output: SSbamDir+"/{lib}_haplotagged.bam.bai"
+	shell: "samtools index {input}"
+
+
+rule output_ss_read_counts:
+	input:
+		ss_haplotagged_bam=SSbamDir+"/{lib}_haplotagged.bam",
+		ss_haplotagged_index=SSbamDir+"/{lib}_haplotagged.bam.bai"
+	output:
+		ss_counts_file="ground_truth_strand_states/{lib}_chrom_haplo_count.data"
+	script: "utils/count_ss_reads.snakemake.py"
+
+
+rule output_ss_haplo_strand_states:
+	input:
+		ss_counts_file="ground_truth_strand_states/{lib}_chrom_haplo_count.data",
+		clust_partners_file="aligns_k{kMinimap}_w{w}_f{f}_z{z}/"+outputfolder+"_{sample}/clust_partners.txt"
+	output:
+		SS_haplo_strand_states="ground_truth_strand_states/{lib}_haplo_strand_states_k{kMinimap}_w{w}_f{f}_z{z}_{sample}.data"
+	params:
+		min_w_frac_in_wc_state=0.4,
+		max_w_frac_in_wc_state=0.6,
+		max_haplo_count_ratio=0.15
+	script: "utils/compute_ss_haplo_strand_states.snakemake.py"
+
+
+########################################################################################
+#####################    assembly evaluation ###########################################
+########################################################################################
+
+# splitting bam files by haploclust groups
+#rule whatshap_split:
+#	input:
+#		fastq=PBbamDir+"/{sample}.fastq.gz",
+#		haplo_list="assembly/haplotype_lists/cluster{clust}_iteration2_pb_phase_kMinimap{kMinimap}_w{w}_f{f}_z{z}_k{k}_a{a}_l{l}_{sample}.data"
+#	output:
+#		splitted=expand("assembly/splitted_fastq/cluster{{clust}}_{haplo}_iteration2_pb_phase_kMinimap{{kMinimap}}_w{{w}}_f{{f}}_z{{z}}_k{{k}}_a{{a}}_l{{l}}_{{sample}}.fastq.gz", haplo=haplotypes)
+#	log: "log/whatshap_split_{clust}_iteration2_pb_phase_kMinimap{kMinimap}_w{w}_f{f}_z{z}_k{k}_a{a}_l{l}_{sample}.log"
+#	shell: "(time {whatshap} split {input.fastq} {input.haplo_list} --output-h1 {output[0]} --output-h2 {output[1]} --discard-unknown-reads {add_untagged} --pigz) > {log} 2>&1"

@@ -1,0 +1,458 @@
+import os
+
+configfile: "config.yaml"
+sample = config["sample"]
+SSfastqDir = config["SS_fastq_dir"]
+Rscript = config["Rscript"]
+whatshap_split = config["whatshap_split"]
+BubbleGun = config["BubbleGun"]
+#hifiasm = config["hifiasm"]
+long_reads = config["long_reads_dir"]
+
+numClustersHard = config["numClustersHard"]
+EMiter          = config["EMiter"]
+alpha           = config["alpha"]
+minLib          = config["minLib"]
+upperQ          = config["upperQ"]
+logLth          = config["logLth"]
+theta_constrain = config["theta_constrain"]
+log_scale    = config["log_scale"]
+numAlignments   = config["numAlignments"]
+chromosomes = range(1, config["num_chromosomes"]+1)
+haplotypes = ["h1","h2"]
+bwa_index_suffices = ["amb", "ann", "bwt", "pac", "sa"]
+assembly = config['assembly']
+
+outputfolder    = "SaaRclust_results"
+libs, = glob_wildcards(os.path.join(SSfastqDir,sample,"{lib}_1.fastq.gz"))
+# print("libs =", libs)
+
+
+#####################################################################
+
+wildcard_constraints:
+	sample = "[a-zA-Z\d]+",
+	clust = "[\d]+"
+
+
+rule all:
+	input:
+		#expand("../../{sample}/{assembly}/asm.r_utg.fa", sample=sample),
+		# expand("../../{sample}/{assembly}/SaaRclust/Clusters/hard_clusters.RData", sample=sample, assembly=assembly),
+		expand("../../{sample}/{assembly}/split/asm.h1.r_utg_{clust}.gfa", sample=sample, assembly=assembly, clust=chromosomes)
+
+###############################################################################
+##############		merging read pairs with PEAR		###############
+###############################################################################
+
+rule pear_merge_mates:
+	input:
+		fq1=SSfastqDir+"/{sample}/{lib}_1.fastq.gz",
+		fq2=SSfastqDir+"/{sample}/{lib}_2.fastq.gz",
+        
+	output:
+		SSfastqDir+"/{sample}/merged/{lib}.assembled.fastq",
+		SSfastqDir+"/{sample}/merged/{lib}.discarded.fastq",
+		SSfastqDir+"/{sample}/merged/{lib}.unassembled.forward.fastq",
+		SSfastqDir+"/{sample}/merged/{lib}.unassembled.reverse.fastq"
+
+	log: "log/pear_merge_mates_{sample}_{lib}.log"
+        
+	shell: "(time pear -f {input.fq1} -r {input.fq2} -t 101 -o {SSfastqDir}/{wildcards.sample}/merged/{wildcards.lib}) > {log} 2>&1"
+
+rule concat_assembled_with_first_pair_of_unassembled:
+	input:
+		SSfastqDir+"/{sample}/merged/{lib}.assembled.fastq",
+		SSfastqDir+"/{sample}/merged/{lib}.unassembled.forward.fastq",
+	output: SSfastqDir+"/{sample}/merged/{lib}.combined.fasta"
+	log: "log/concat_merged_with_first_unmerged_{sample}_{lib}.log"
+	shell: "(time bioawk -c fastx '{{print \">\"$name; print $seq}}' <(cat {input}) > {output}) > {log} 2>&1"
+
+########################################################################################################################
+################################### hifiasm ##############################################
+########################################################################################################################		
+
+rule hifiasm:
+	input: fastq=long_reads+"/{sample}.fastq.gz",
+	output:
+		gfa="../../{sample}/{assembly}/asm.bp.r_utg.gfa",
+	threads: 80
+	log: "log/hifiasm_{sample}_{assembly}.log"
+	shell:
+		'''
+		DIR=$(dirname {output.gfa}) &&
+		(time hifiasm -o $DIR/asm -t {threads} {input}) > {log} 2<&1
+		'''
+
+rule gfa_to_fasta:
+	input: "../../{sample}/{assembly}/asm.bp.r_utg.gfa",
+	output: "../../{sample}/{assembly}/asm.r_utg.fa",
+	threads: 2
+	log: "log/gfa_to_fasta_hifiasm_{sample}_{assembly}.log"
+	shell:
+		'''
+		(time grep S {input} | awk '{{print \">\"$2\"\\n\"$3}}' > {output}) > {log} 2<&1
+		'''
+
+######################################################
+########### merging and indexing vcf files ###########
+######################################################
+
+#rule index_vcf_file:
+#	input: config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz"
+#	output: config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz.tbi"
+#	log: "log/index_vcf_file_{chrom}.log"
+#	shell: "tabix {input}"
+
+#rule merge_chromosome_vcf:
+#	input:
+#		vcf=expand(config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz", chrom=chroms),
+#		tbi=expand(config["phased_vcf_dir"]+config["vcf_prefix"]+".{chrom}.vcf.gz.tbi", chrom=chroms)
+#	output: config["phased_vcf_dir"]+"merged_phased.vcf.gz"
+#	log: "log/merge_chromosome_vcf.log"
+#	shell: #"(time bcftools merge --force-samples -Oz {input.vcf} -o {output}) > {log} 2>&1"
+#		'''
+#		(time cat <(zcat {input[0]} | awk '/^#/{{print}}') <(zcat {input} | awk '/^chr/{{print}}') | bgzip -c > {output}) > {log} 2>&1
+#		'''
+
+#rule index_merged_phased_vcf:
+#	input: config["phased_vcf_dir"]+"merged_phased.vcf.gz"
+#	output: config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi"
+#	log: "log/index_merged_phased_vcf.log"
+#	shell: "(time tabix {input}) > {log} 2>&1"
+
+##########################################################################################################################
+######### TO REMOVE- Using reference genome only for evaluation- mapping/haplotagging overlap graph unitigs ##############
+##########################################################################################################################
+
+rule bwa_index_ref:
+	input: config["reference"]
+	output: expand(config["reference"]+".{suffix}", suffix=bwa_index_suffices)
+	log: "log/bwa_index_ref.log"
+	shell: "(time bwa index {input}) > {log} 2>&1"
+
+
+rule map_unitigs_to_ref:
+	input:
+		ref=config["reference"],
+		bwa_idx=expand(config["reference"]+".{suffix}", suffix=bwa_index_suffices),
+		unitigs="../../{sample}/{assembly}/asm.r_utg.fa"
+	output: temp("../../{sample}/{assembly}/ref_aln/temp_asm.r_utg.bam")
+	log: "log/map_unitigs_to_ref_{sample}_{assembly}.log"
+	threads: 46
+	shell:
+		"(time minimap2 -t {threads} --secondary=no --eqx -Y -ax asm20 {input.ref} {input.unitigs} | samtools view -Sb - > {output}) > {log} 2>&1"
+
+rule sort_index_unitig_bams:
+	input: "../../{sample}/{assembly}/ref_aln/temp_asm.r_utg.bam"
+	output:
+		bam="../../{sample}/{assembly}/ref_aln/asm.r_utg.bam",
+		bai="../../{sample}/{assembly}/ref_aln/asm.r_utg.bam.bai"
+	threads: 46
+	log: "log/bwa_sort_index_unitigs_bams_{sample}_{assembly}.log"
+	shell: 
+		'''
+		(time samtools sort -@ {threads} -o {output.bam} {input} &&
+		samtools index -@ {threads} {output.bam}) > {log} 2>&1
+		'''
+
+#rule haplotag_unitigs:
+#	input:
+#		ref=config["reference"],
+#		bwa_idx=expand(config["reference"]+".{suffix}", suffix=bwa_index_suffices),
+#		fai=config["reference"] + ".fai",
+#		vcf=config["phased_vcf_dir"]+"merged_phased.vcf.gz",
+#		tbi=config["phased_vcf_dir"]+"merged_phased.vcf.gz.tbi",
+#		bam="../../{sample}/{assembly}/ref_aln/asm.r_utg.bam",
+#		bai="../../{sample}/{assembly}/ref_aln/asm.r_utg.bam.bai",
+#	output: "../../{sample}/{assembly}/ref_aln/asm.r_utg.haplotagged.bam"
+#	log: "log/haplotag_unitigs_{sample}_{assembly}.log"
+#	shell: "(time whatshap haplotag -o {output} --reference {input.ref} {input.vcf} {input.bam} --ignore-read-groups --sample={sample}) > {log} 2>&1"
+
+
+#rule index_haplotagged_bam_unitigs:
+#	input:  "../../{sample}/{assembly}/ref_aln/asm.r_utg.haplotagged.bam"
+#	output: "../../{sample}/{assembly}/ref_aln/asm.r_utg.haplotagged.bam.bai"
+#	log: "log/index_haplotagged_bam_unitigs_{sample}_{assembly}.log"
+#	shell: "(time samtools index {input}) > {log} 2>&1"
+
+
+########################################################################################################################
+###################################  aligning ss reads to hifiasm unitigs ##############################################
+########################################################################################################################
+
+rule bwa_index_hifiasm_unitigs:
+	input: "../../{sample}/{assembly}/asm.r_utg.fa"
+	output: expand("../../{{sample}}/{{assembly}}/asm.r_utg.fa.{extention}", extention=['amb', 'ann', 'bwt', 'pac', 'sa'])
+	log: "log/bwa_index_hifiasm_unitigs_{sample}_{assembly}.log"
+	shell: "(time bwa index {input}) > {log} 2>&1"
+
+rule bwa_align:
+	input:
+		unitigs="../../{sample}/{assembly}/asm.r_utg.fa",
+		unitigs_index=expand("../../{{sample}}/{{assembly}}/asm.r_utg.fa.{extention}", extention=['amb', 'ann', 'bwt', 'pac', 'sa']),
+		ss_reads=SSfastqDir+"/{sample}/merged/{lib}.combined.fasta"
+	output: temp("../../{sample}/{assembly}/temp_bwa_ss_unitigs/{lib}.bam")
+	threads: 2
+	log: "log/bwa_align_chunks_{sample}_{assembly}_{lib}.log"
+	shell: "(time bwa mem -t {threads} {input.unitigs} {input.ss_reads} | samtools view -Sb - > {output}) > {log} 2>&1"
+
+rule bwa_sort:
+	input: "../../{sample}/{assembly}/temp_bwa_ss_unitigs/{lib}.bam"
+	output: "../../{sample}/{assembly}/bwa_ss_unitigs/{lib}.bam"
+	log: "log/bwa_sort_{sample}_{lib}_{assembly}.log"
+	shell:
+		'''
+		(time samtools sort -o {output} {input}) > {log} 2>&1
+		'''
+
+rule mark_duplicates:
+	input: "../../{sample}/{assembly}/bwa_ss_unitigs/{lib}.bam"
+	output: "../../{sample}/{assembly}/bwa_ss_unitigs/{lib}.mdup.bam",
+	log: "log/mark_duplicates_{sample}_{lib}_{assembly}.log"
+	shell: 
+		'''
+		(time sambamba markdup {input} {output}) > {log} 2>&1
+		'''
+
+rule bwa_index:
+	input: "../../{sample}/{assembly}/bwa_ss_unitigs/{lib}.mdup.bam"
+	output: "../../{sample}/{assembly}/bwa_ss_unitigs/{lib}.mdup.bam.bai"
+	log: "log/bwa_index_{sample}_{lib}_{assembly}.log"
+	shell:
+		'''
+		(time samtools index {input}) > {log} 2>&1
+		'''	
+
+########################################################################################################################
+###################################  SaaRclust ##############################################
+########################################################################################################################
+
+rule install_SaaRclust:
+	output:
+		"utils/R-packages/SaaRclust/R/SaaRclust"
+	log: "log/saarclust-install.log"
+	shell:
+		"""
+		{Rscript} utils/install_SaaRclust.R > {log} 2>&1
+		"""
+
+############################# rule unitigs alignemnt to ref is missing (see Snakefile_eval)...
+
+rule SaaRclust:
+	input:
+		bam=expand("../../{{sample}}/{{assembly}}/bwa_ss_unitigs/{lib}.mdup.bam", lib=libs),
+		bai=expand("../../{{sample}}/{{assembly}}/bwa_ss_unitigs/{lib}.mdup.bam.bai", lib=libs),
+		unitigs_bam="../../{sample}/{assembly}/ref_aln/asm.r_utg.bam",
+		unitigs_bam_index="../../{sample}/{assembly}/ref_aln/asm.r_utg.bam.bai"
+	#				"../../{sample}/{assembly}/ref_aln/asm.r_utg.haplotagged.bam",
+	#	saarclust="utils/R-packages/SaaRclust/R/SaaRclust"
+	output:
+		hard_clust="../../{sample}/{assembly}/SaaRclust/Clusters/hard_clusters.RData",
+		soft_clust="../../{sample}/{assembly}/SaaRclust/Clusters/soft_clusters.RData",
+		ML_clust="../../{sample}/{assembly}/SaaRclust/Clusters/MLclust.data",
+		ss_clust="../../{sample}/{assembly}/SaaRclust/Clusters/ss_clusters.data",
+		ss_clust_sp=expand("../../{{sample}}/{{assembly}}/SaaRclust/Clusters/ss_clusters_{clust}.data", clust=chromosomes),
+		clust_pairs="../../{sample}/{assembly}/SaaRclust/Clusters/clust_partners.txt",
+		wc_cells_clusters="../../{sample}/{assembly}/SaaRclust/Clusters/wc_cells_clusters.data"
+	params:
+		input_type="bam",
+		sex="male",
+		num_clusters=numClustersHard,
+		num_alignments=numAlignments,
+		EMiter=EMiter,
+	threads: 46
+	log: "log/SaaRclust_{sample}_{assembly}_initial_clusters.log"
+	script: "utils/SaaRclust.snakemake.R"
+
+###########################################################################################################################
+################################### splitting reads/unitigs into chromosomes ##############################################
+###########################################################################################################################
+
+rule merge_all_ss_fasta:
+	input: expand(SSfastqDir+"/{{sample}}/merged/{lib}.combined.fasta", lib=libs)
+	output: SSfastqDir+"/{sample}/split/all_libs.fasta"
+	shell:
+		'''
+		for f in {input}
+		do
+			libname=$(basename $f .combined.fasta)
+			echo libname = $libname
+			bioawk -c fastx -v libname=$libname '{{print \">\"$name"_"libname; print $seq}}' $f >> {output}
+		done
+		'''
+
+rule split_ss_reads:
+	input:
+		fasta=SSfastqDir+"/{sample}/split/all_libs.fasta",
+		clust="../../{sample}/{assembly}/SaaRclust/Clusters/ss_clusters.data",
+	output:expand(SSfastqDir+"/{{sample}}/{{assembly}}/split/all_libs_{clust}.fasta", clust=chromosomes)
+	log: "log/split_ss_reads_{sample}_{assembly}.log"
+	shell: "(time python3 {whatshap_split} {input.fasta} {input.clust} --split-by-cluster) > {log} 2>&1"
+
+rule split_hifiasm_graph:
+	input:
+		gfa="../../{sample}/{assembly}/asm.bp.r_utg.gfa",
+		fasta="../../{sample}/{assembly}/asm.r_utg.fa",
+		clust="../../{sample}/{assembly}/SaaRclust/Clusters/MLclust.data",
+	output:
+		gfa=expand("../../{{sample}}/{{assembly}}/split/asm.r_utg_{clust}.gfa", clust=chromosomes),
+		fasta=expand("../../{{sample}}/{{assembly}}/split/asm.r_utg_{clust}.fa", clust=chromosomes),
+	log: "log/split_ss_reads_{sample}_{assembly}.log"
+	shell: 
+		'''
+		DIR=$(dirname {output.gfa[0]}) &&
+		(time python3 {whatshap_split} {input.gfa} {input.clust} --output-folder $DIR --split-by-cluster &&
+		python3 {whatshap_split} {input.fasta} {input.clust} --output-folder $DIR --split-by-cluster) > {log} 2>&1
+		'''
+
+# issue: only a subset of ccs reads are present in hifiasm gfa files
+rule get_long_read_names_by_chrom:
+	input: "../../{sample}/{assembly}/split/asm.r_utg_{clust}.gfa",
+	output: temp(long_reads+"/{assembly}_split/{sample}_read_names_{clust}.data"),
+	log: "log/cluster_long_reads__by_chrom_{sample}_{clust}_{assembly}.log"
+	shell: '''(time awk '$1=="A" {{print $5"\tnone\t{wildcards.clust}"}}' {input} > {output}) > {log} 2>&1'''
+
+rule split_long_reads:
+	input:
+		clust=expand(long_reads+"/{{assembly}}_split/{{sample}}_read_names_{clust}.data", clust=chromosomes),
+		fastq=long_reads+"/{sample}.fastq.gz",
+	output:
+		clust=long_reads+"/{assembly}_split/{sample}_chrom_clust.data",
+		fastq=expand(long_reads+"/{{assembly}}_split/{{sample}}_{clust}.fastq.gz", clust=chromosomes)
+	log: "log/split_long_reads_{sample}_{assembly}.log"
+	shell:
+		'''
+		DIR=$(dirname {output.fastq[0]}) &&
+		(time cat {input.clust} > {output.clust} &&
+		python3 {whatshap_split} {input.fastq} {output.clust} --output-folder $DIR --split-by-cluster) > {log} 2>&1
+		'''
+
+########################################################################################################################
+##################################### Detecting Bubbles in Hifiasm Graph ###############################################
+########################################################################################################################
+
+
+rule detect_bubbles_overlap_graph:
+	input: "../../{sample}/{assembly}/split/asm.r_utg_{clust}.gfa"
+	output: "../../{sample}/{assembly}/split/asm.r_bubbles_{clust}.fasta"
+	log: "log/detect_bubbles_overlap_graph_{sample}_{clust}_{assembly}_r.log"
+	shell: "(time {BubbleGun} -g {input} bchains --fasta {output})> {log} 2>&1"
+
+########################################################################################################################
+##################################### Mapping Strand-seq read to Bubbles ###############################################
+########################################################################################################################
+
+rule map_ss_reads_to_unitigs:
+	input:
+		SSreads=SSfastqDir+"/{sample}/{assembly}/split/all_libs_{clust}.fasta",
+		utg="../../{sample}/{assembly}/split/asm.r_utg_{clust}.fa",
+	output:
+		map="../../{sample}/{assembly}/exact_match/{clust}_r_utg_maximal_uniqe_exact_match.data",
+	threads: 2
+	log: "log/map_SS_reads_to_unitigs_{sample}_{clust}_{assembly}.log"
+	shell: 
+		'''
+		(time bwa index {input.utg} &&
+		bwa fastmap -w 1 -l 75 {input.utg} {input.SSreads} > {output}) > {log} 2>&1
+		'''
+
+rule output_valid_maps:
+	input:
+		map="../../{sample}/{assembly}/exact_match/{clust}_r_utg_maximal_uniqe_exact_match.data",
+		bubbles="../../{sample}/{assembly}/split/asm.r_bubbles_{clust}.fasta",
+	output: "../../{sample}/{assembly}/exact_match/valid_{clust}_r_utg_maximal_uniqe_exact_match.data"
+	log: "log/output_valid_maps_{sample}_{clust}_{assembly}.log"
+	script: "utils/output_valid_maps.snakemake.py"
+
+########################################################################################################################
+#################################### Phasing Strand-seq reads, bubbles, and Unitigs ####################################
+########################################################################################################################
+
+# TODO: fix the problem of strandphaser phased bubbles. Haplotype sorting of strand states is accurate, but phasing bubbles is not accurate.
+rule strandphaser_overlap_graph:
+	input:
+		ss_clust="../../{sample}/{assembly}/SaaRclust/Clusters/ss_clusters_{clust}.data",
+		clust_pairs="../../{sample}/{assembly}/SaaRclust/Clusters/clust_partners.txt",
+		map="../../{sample}/{assembly}/exact_match/valid_{clust}_r_utg_maximal_uniqe_exact_match.data",
+		bubbles="../../{sample}/{assembly}/split/asm.r_bubbles_{clust}.fasta",
+		wc_cell_clust="../../{sample}/{assembly}/SaaRclust/Clusters/wc_cells_clusters.data",
+	output:
+		phased_strand_states="../../{sample}/{assembly}/phased_strand_states/haplo_strand_states_{clust}.data",
+	log: "log/strandphaser_{sample}_{clust}_{assembly}.log"
+	script: "utils/strandphaser.snakemake.R"
+
+
+rule phase_unitigs:
+	input:
+		ss_clust="../../{sample}/{assembly}/SaaRclust/Clusters/ss_clusters.data",
+		map="../../{sample}/{assembly}/exact_match/valid_{clust}_r_utg_maximal_uniqe_exact_match.data",
+		bubbles="../../{sample}/{assembly}/split/asm.r_bubbles_{clust}.fasta",
+		phased_strand_states="../../{sample}/{assembly}/phased_strand_states/haplo_strand_states_{clust}.data",
+	output: "../../{sample}/{assembly}/phased_unitigs/{clust}_phased_unitigs.data"
+	script: "utils/phase_snv_bubbles.snakemake.py"
+
+########################################################################################################################
+################################################## haplosplit graph ####################################################
+########################################################################################################################
+
+rule haplosplit_graph:
+	input:
+		input_gfa="../../{sample}/{assembly}/split/asm.r_utg_{clust}.gfa",
+		haplo_file="../../{sample}/{assembly}/phased_unitigs/{clust}_phased_unitigs.data"
+	output:
+		h1="../../{sample}/{assembly}/split/asm.h1.r_utg_{clust}.gfa",
+		h2="../../{sample}/{assembly}/split/asm.h2.r_utg_{clust}.gfa",
+		untagged="../../{sample}/{assembly}/split/asm.untagged.r_utg_{clust}.gfa",
+	log: "log/haplosplit_graph_{sample}_{clust}_{assembly}.log"
+	shell:
+		'''
+		(time python3 {whatshap_split} {input} --output-h1 {output.h1} --output-h2 {output.h2} \
+		--output-untagged {output.untagged} --add-untagged) > {log} 2>&1
+		'''
+
+########################################################################################################################
+####################################### hifiasm per chrom/haplotype ####################################################
+########################################################################################################################
+
+# issue: only a subset of ccs reads are present in hifiasm gfa files
+rule get_long_read_names_by_haplo:
+	input:
+		gfa_h1="../../{sample}/{assembly}/split/asm.h1.r_utg_{clust}.gfa",
+		gfa_h2="../../{sample}/{assembly}/split/asm.h2.r_utg_{clust}.gfa",
+	output: long_reads+"/{assembly}_split/{sample}_read_names_{clust}_haplo.data"
+	log: "log/get_long_read_names_by_haplo_{sample}_{clust}_{assembly}.log"
+	shell: 
+		'''
+		(time awk '$1=="A" {{print $5"\tH1"}}' {input.gfa_h1} > {output} &&
+			  awk '$1=="A" {{print $5"\tH2"}}' {input.gfa_h2} >> {output}) > {log} 2>&1
+		'''
+
+rule haplosplit_long_reads_fastq:
+	input:
+		fastq=long_reads+"/{assembly}_split/{sample}_{clust}.fastq.gz",
+		haplo_list=long_reads+"/{assembly}_split/{sample}_read_names_{clust}_haplo.data"
+	output:
+		h1=long_reads+"/{assembly}_split/{sample}_{clust}_h1.fastq.gz",
+		h2=long_reads+"/{assembly}_split/{sample}_{clust}_h2.fastq.gz",
+		untagged=long_reads+"/{assembly}_split/{sample}_{clust}_untagged.fastq.gz",
+	log: "log/haplosplit_unitig_fasta_{sample}_{clust}_{assembly}.log"
+	shell:
+		'''
+		(time python3 {whatshap_split} {input} --output-h1 {output.h1} --output-h2 {output.h2} \
+		--output-untagged {output.untagged} --add-untagged) > {log} 2>&1
+		'''
+
+rule hifiasm_per_haplo:
+	input: long_reads+"/{assembly}_split/{sample}_{clust}_{haplo}.fastq.gz"
+	output:
+		gfa="../../{sample}/{assembly}/split_raw_long_reads/hifiasm_{clust}_{haplo}/asm.p_ctg.gfa",
+		fa="../../{sample}/{assembly}/split_raw_long_reads/hifiasm_{clust}_{haplo}/asm.p_ctg.fa",
+	threads: 4
+	log: "log/hifiasm_{sample}_{clust}_{haplo}_{assembly}.log"
+	shell:
+		'''
+		DIR=$(dirname {output.gfa}) &&
+		(time {hifiasm} -o $DIR/asm -t {threads} {input} &&
+		awk '/^S/{{print ">"$2;print $3}}' {output.gfa} > {output.fa}) > {log} 2<&1
+		'''
